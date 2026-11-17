@@ -4,7 +4,10 @@ import {
   ClipboardList,
   Plus,
   RefreshCw,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Archive,
+  ArchiveRestore,
+  Trash2
 } from 'lucide-react'
 import { supabase } from '../services/supabase'
 
@@ -16,14 +19,16 @@ type Formulario = {
   created_at: string
 }
 
-function Formularios() {
+export default function Formularios() {
   const [formularios, setFormularios] = useState<Formulario[]>([])
   const [titulo, setTitulo] = useState('')
   const [descricao, setDescricao] = useState('')
   const [criando, setCriando] = useState(false)
   const [salvando, setSalvando] = useState(false)
   const [carregando, setCarregando] = useState(true)
+  const [processandoId, setProcessandoId] = useState<string | null>(null)
   const [erro, setErro] = useState('')
+  const [mensagem, setMensagem] = useState('')
 
   async function carregarFormularios() {
     setCarregando(true)
@@ -51,6 +56,7 @@ function Formularios() {
     event.preventDefault()
     setSalvando(true)
     setErro('')
+    setMensagem('')
 
     try {
       const { data: authData, error: authError } =
@@ -80,6 +86,7 @@ function Formularios() {
       setCriando(false)
 
       await carregarFormularios()
+      setMensagem('Formulário criado com sucesso.')
     } catch (error) {
       setErro(
         error instanceof Error
@@ -95,6 +102,147 @@ function Formularios() {
     window.location.hash = `editar-formulario/${id}`
   }
 
+  async function alterarStatus(formulario: Formulario) {
+    const arquivado = formulario.status === 'arquivado'
+    const novoStatus = arquivado ? 'rascunho' : 'arquivado'
+
+    const confirmado = window.confirm(
+      arquivado
+        ? `Deseja restaurar "${formulario.title}" como rascunho?`
+        : `Deseja arquivar "${formulario.title}"?\n\nEle deixará de aparecer para os funcionários, mas suas respostas serão preservadas.`
+    )
+
+    if (!confirmado) return
+
+    setProcessandoId(formulario.id)
+    setErro('')
+    setMensagem('')
+
+    try {
+      const { data, error } = await supabase
+        .from('forms')
+        .update({ status: novoStatus })
+        .eq('id', formulario.id)
+        .select('id')
+
+      if (error) throw error
+
+      if (!data?.length) {
+        throw new Error(
+          'A alteração não foi autorizada pelo banco de dados.'
+        )
+      }
+
+      await carregarFormularios()
+
+      setMensagem(
+        arquivado
+          ? 'Formulário restaurado como rascunho. Publique-o novamente quando desejar.'
+          : 'Formulário arquivado com sucesso.'
+      )
+    } catch (error) {
+      setErro(
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível alterar o status.'
+      )
+    } finally {
+      setProcessandoId(null)
+    }
+  }
+
+  async function excluirFormulario(formulario: Formulario) {
+    setProcessandoId(formulario.id)
+    setErro('')
+    setMensagem('')
+
+    try {
+      // Verifica se o formulário já recebeu respostas.
+      const { count, error: erroConsulta } = await supabase
+        .from('form_responses')
+        .select('id', { count: 'exact', head: true })
+        .eq('form_id', formulario.id)
+
+      if (erroConsulta) {
+        console.error(
+          'Erro ao consultar respostas:',
+          erroConsulta
+        )
+        throw erroConsulta
+      }
+
+      if (count === null) {
+        throw new Error(
+          'Não foi possível verificar se o formulário possui respostas.'
+        )
+      }
+
+      // Preserva formulários com respostas enviadas.
+      if (count > 0) {
+        throw new Error(
+          `Não é possível excluir "${formulario.title}" porque ele possui ${count} resposta(s). Arquive o formulário para preservar o histórico.`
+        )
+      }
+
+      const confirmado = window.confirm(
+        `ATENÇÃO!\n\nDeseja excluir permanentemente o formulário "${formulario.title}"?\n\nAs perguntas vinculadas também poderão ser excluídas.\n\nEssa ação não poderá ser desfeita.`
+      )
+
+      if (!confirmado) return
+
+      // O banco deve tratar as perguntas vinculadas
+      // conforme a configuração da chave estrangeira.
+      const { data, error } = await supabase
+        .from('forms')
+        .delete()
+        .eq('id', formulario.id)
+        .select('id')
+
+      if (error) {
+        console.error('Erro ao excluir formulário:', {
+          codigo: error.code,
+          mensagem: error.message,
+          detalhes: error.details,
+          dica: error.hint
+        })
+
+        throw new Error(
+          `Erro ${error.code || 'desconhecido'}: ${error.message}${
+            error.details ? ` | Detalhes: ${error.details}` : ''
+          }`
+        )
+      }
+
+      if (!data?.length) {
+        throw new Error(
+          'O formulário não foi excluído. Verifique as permissões de exclusão no Supabase.'
+        )
+      }
+
+      await carregarFormularios()
+      setMensagem(
+        `Formulário "${formulario.title}" excluído com sucesso.`
+      )
+    } catch (error) {
+      setErro(
+        error instanceof Error
+          ? error.message
+          : 'Não foi possível excluir o formulário.'
+      )
+    } finally {
+      setProcessandoId(null)
+    }
+  }
+
+  const estiloBotao = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '10px 16px',
+    borderRadius: '8px',
+    cursor: 'pointer'
+  } as const
+
   return (
     <section style={{ padding: '32px', width: '100%' }}>
       <header
@@ -108,22 +256,17 @@ function Formularios() {
       >
         <div>
           <h1>Formulários</h1>
-          <p>Crie e gerencie os formulários do sistema.</p>
+          <p>Crie, arquive, restaure e gerencie os formulários.</p>
         </div>
 
         <button
           type="button"
           onClick={() => setCriando(true)}
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '10px 16px',
+            ...estiloBotao,
             backgroundColor: '#2563eb',
             color: '#fff',
-            border: 'none',
-            borderRadius: '8px',
-            cursor: 'pointer'
+            border: 'none'
           }}
         >
           <Plus size={18} />
@@ -132,8 +275,26 @@ function Formularios() {
       </header>
 
       {erro && (
-        <p role="alert" style={{ color: '#b91c1c' }}>
+        <p
+          role="alert"
+          style={{
+            color: '#b91c1c',
+            marginTop: '16px'
+          }}
+        >
           {erro}
+        </p>
+      )}
+
+      {mensagem && (
+        <p
+          role="status"
+          style={{
+            color: '#166534',
+            marginTop: '16px'
+          }}
+        >
+          {mensagem}
         </p>
       )}
 
@@ -151,7 +312,10 @@ function Formularios() {
         >
           <h2>Criar formulário</h2>
 
-          <label htmlFor="titulo-formulario">Título</label>
+          <label htmlFor="titulo-formulario">
+            Título
+          </label>
+
           <input
             id="titulo-formulario"
             value={titulo}
@@ -165,7 +329,10 @@ function Formularios() {
             }}
           />
 
-          <label htmlFor="descricao-formulario">Descrição</label>
+          <label htmlFor="descricao-formulario">
+            Descrição
+          </label>
+
           <textarea
             id="descricao-formulario"
             value={descricao}
@@ -190,26 +357,22 @@ function Formularios() {
               type="submit"
               disabled={salvando}
               style={{
-                padding: '10px 16px',
+                ...estiloBotao,
                 backgroundColor: '#2563eb',
                 color: '#fff',
-                border: 'none',
-                borderRadius: '8px',
-                cursor: 'pointer'
+                border: 'none'
               }}
             >
-              {salvando ? 'Salvando...' : 'Salvar formulário'}
+              {salvando
+                ? 'Salvando...'
+                : 'Salvar formulário'}
             </button>
 
             <button
               type="button"
               onClick={() => setCriando(false)}
               disabled={salvando}
-              style={{
-                padding: '10px 16px',
-                borderRadius: '8px',
-                cursor: 'pointer'
-              }}
+              style={estiloBotao}
             >
               Cancelar
             </button>
@@ -229,7 +392,9 @@ function Formularios() {
           >
             <ClipboardList size={42} />
             <h2>Nenhum formulário cadastrado</h2>
-            <p>Clique em Novo formulário para começar.</p>
+            <p>
+              Clique em Novo formulário para começar.
+            </p>
           </div>
         ) : (
           <div
@@ -238,46 +403,110 @@ function Formularios() {
               gap: '16px'
             }}
           >
-            {formularios.map((formulario) => (
-              <article
-                key={formulario.id}
-                style={{
-                  background: '#fff',
-                  padding: '24px',
-                  borderRadius: '12px'
-                }}
-              >
-                <h2>{formulario.title}</h2>
+            {formularios.map((formulario) => {
+              const ocupado =
+                processandoId === formulario.id
 
-                <p>
-                  {formulario.description || 'Sem descrição'}
-                </p>
+              const arquivado =
+                formulario.status === 'arquivado'
 
-                <p>
-                  Status: <strong>{formulario.status}</strong>
-                </p>
-
-                <button
-                  type="button"
-                  onClick={() => editarFormulario(formulario.id)}
+              return (
+                <article
+                  key={formulario.id}
                   style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    marginTop: '12px',
-                    padding: '10px 16px',
-                    backgroundColor: '#2563eb',
-                    color: '#fff',
-                    border: 'none',
-                    borderRadius: '8px',
-                    cursor: 'pointer'
+                    background: '#fff',
+                    padding: '24px',
+                    borderRadius: '12px',
+                    border: arquivado
+                      ? '1px solid #cbd5e1'
+                      : '1px solid transparent'
                   }}
                 >
-                  <FileSpreadsheet size={18} />
-                  Editar / Importar Excel
-                </button>
-              </article>
-            ))}
+                  <h2>{formulario.title}</h2>
+
+                  <p>
+                    {formulario.description ||
+                      'Sem descrição'}
+                  </p>
+
+                  <p>
+                    Status:{' '}
+                    <strong>
+                      {formulario.status}
+                    </strong>
+                  </p>
+
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: '10px',
+                      flexWrap: 'wrap',
+                      marginTop: '12px'
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        editarFormulario(formulario.id)
+                      }
+                      disabled={ocupado}
+                      style={{
+                        ...estiloBotao,
+                        backgroundColor: '#2563eb',
+                        color: '#fff',
+                        border: 'none'
+                      }}
+                    >
+                      <FileSpreadsheet size={18} />
+                      Editar / Importar Excel
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void alterarStatus(formulario)
+                      }
+                      disabled={ocupado}
+                      style={{
+                        ...estiloBotao,
+                        backgroundColor: '#f1f5f9',
+                        color: '#334155',
+                        border: '1px solid #cbd5e1'
+                      }}
+                    >
+                      {arquivado ? (
+                        <ArchiveRestore size={18} />
+                      ) : (
+                        <Archive size={18} />
+                      )}
+
+                      {arquivado
+                        ? 'Restaurar'
+                        : 'Arquivar'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void excluirFormulario(formulario)
+                      }
+                      disabled={ocupado}
+                      style={{
+                        ...estiloBotao,
+                        backgroundColor: '#fef2f2',
+                        color: '#b91c1c',
+                        border: '1px solid #fecaca'
+                      }}
+                    >
+                      <Trash2 size={18} />
+                      {ocupado
+                        ? 'Aguarde...'
+                        : 'Excluir'}
+                    </button>
+                  </div>
+                </article>
+              )
+            })}
           </div>
         )}
       </div>
@@ -286,13 +515,8 @@ function Formularios() {
         type="button"
         onClick={() => void carregarFormularios()}
         style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '8px',
-          marginTop: '24px',
-          padding: '10px 16px',
-          borderRadius: '8px',
-          cursor: 'pointer'
+          ...estiloBotao,
+          marginTop: '24px'
         }}
       >
         <RefreshCw size={16} />
@@ -301,5 +525,3 @@ function Formularios() {
     </section>
   )
 }
-
-export default Formularios
