@@ -1,6 +1,6 @@
 
 import { useEffect, useState } from 'react'
-import { FileCheck, RefreshCw } from 'lucide-react'
+import { FileCheck, RefreshCw, UserRound } from 'lucide-react'
 import { supabase } from '../services/supabase'
 
 type Resposta = {
@@ -24,10 +24,16 @@ type Pergunta = {
   position: number
 }
 
+type Perfil = {
+  id: string
+  full_name: string | null
+}
+
 export default function Respostas() {
   const [respostas, setRespostas] = useState<Resposta[]>([])
   const [formularios, setFormularios] = useState<Formulario[]>([])
   const [perguntas, setPerguntas] = useState<Pergunta[]>([])
+  const [perfis, setPerfis] = useState<Perfil[]>([])
   const [carregando, setCarregando] = useState(true)
   const [erro, setErro] = useState('')
   const [filtro, setFiltro] = useState('')
@@ -38,28 +44,63 @@ export default function Respostas() {
     setErro('')
 
     try {
-      const [resultadoRespostas, resultadoFormularios, resultadoPerguntas] =
-        await Promise.all([
-          supabase
-            .from('form_responses')
-            .select('id, form_id, user_id, status, submitted_at, answers')
-            .order('submitted_at', { ascending: false }),
-          supabase
-            .from('forms')
-            .select('id, title'),
-          supabase
-            .from('form_questions')
-            .select('id, form_id, title, position')
-            .order('position', { ascending: true })
-        ])
+      const [
+        resultadoRespostas,
+        resultadoFormularios,
+        resultadoPerguntas
+      ] = await Promise.all([
+        supabase
+          .from('form_responses')
+          .select('id, form_id, user_id, status, submitted_at, answers')
+          .order('submitted_at', { ascending: false }),
+
+        supabase
+          .from('forms')
+          .select('id, title'),
+
+        supabase
+          .from('form_questions')
+          .select('id, form_id, title, position')
+          .order('position', { ascending: true })
+      ])
 
       if (resultadoRespostas.error) throw resultadoRespostas.error
       if (resultadoFormularios.error) throw resultadoFormularios.error
       if (resultadoPerguntas.error) throw resultadoPerguntas.error
 
-      setRespostas((resultadoRespostas.data ?? []) as Resposta[])
-      setFormularios(resultadoFormularios.data ?? [])
-      setPerguntas(resultadoPerguntas.data ?? [])
+      const listaRespostas = (resultadoRespostas.data ?? []) as Resposta[]
+
+      setRespostas(listaRespostas)
+      setFormularios((resultadoFormularios.data ?? []) as Formulario[])
+      setPerguntas((resultadoPerguntas.data ?? []) as Pergunta[])
+
+      const idsUsuarios = [
+        ...new Set(
+          listaRespostas
+            .map((resposta) => resposta.user_id)
+            .filter(Boolean)
+        )
+      ]
+
+      if (idsUsuarios.length > 0) {
+        const resultadoPerfis = await supabase
+          .from('profiles')
+          .select('id, full_name')
+          .in('id', idsUsuarios)
+
+        if (resultadoPerfis.error) {
+          setPerfis([])
+          setErro(
+            'As respostas foram carregadas, mas não foi possível ' +
+            'consultar os nomes dos usuários: ' +
+            resultadoPerfis.error.message
+          )
+        } else {
+          setPerfis((resultadoPerfis.data ?? []) as Perfil[])
+        }
+      } else {
+        setPerfis([])
+      }
     } catch (error) {
       setErro(
         error instanceof Error
@@ -76,13 +117,23 @@ export default function Respostas() {
   }, [])
 
   function nomeFormulario(id: string) {
-    return formularios.find((formulario) => formulario.id === id)?.title
-      ?? 'Formulário não encontrado'
+    return (
+      formularios.find((formulario) => formulario.id === id)?.title ??
+      'Formulário não encontrado'
+    )
+  }
+
+  function nomeUsuario(id: string) {
+    const perfil = perfis.find((usuario) => usuario.id === id)
+
+    return perfil?.full_name?.trim() || 'Usuário não identificado'
   }
 
   function tituloPergunta(id: string) {
-    return perguntas.find((pergunta) => pergunta.id === id)?.title
-      ?? `Pergunta ${id}`
+    return (
+      perguntas.find((pergunta) => pergunta.id === id)?.title ??
+      `Pergunta ${id}`
+    )
   }
 
   function formatarValor(valor: unknown): string {
@@ -99,6 +150,18 @@ export default function Respostas() {
     }
 
     return String(valor)
+  }
+
+  function formatarData(data: string | null) {
+    if (!data) return 'Data não informada'
+
+    const dataConvertida = new Date(data)
+
+    if (Number.isNaN(dataConvertida.getTime())) {
+      return 'Data inválida'
+    }
+
+    return dataConvertida.toLocaleString('pt-BR')
   }
 
   const respostasFiltradas = filtro
@@ -118,12 +181,18 @@ export default function Respostas() {
       >
         <div>
           <h1>Respostas dos formulários</h1>
-          <p>Consulte os formulários preenchidos e enviados.</p>
+          <p>
+            Consulte quem respondeu, quando enviou e as respostas registradas.
+          </p>
         </div>
 
-        <button type="button" onClick={() => void carregarDados()}>
+        <button
+          type="button"
+          onClick={() => void carregarDados()}
+          disabled={carregando}
+        >
           <RefreshCw size={18} />
-          Atualizar
+          {carregando ? 'Atualizando...' : 'Atualizar'}
         </button>
       </header>
 
@@ -160,6 +229,12 @@ export default function Respostas() {
         </select>
       </div>
 
+      {!carregando && (
+        <p style={{ marginBottom: '16px', color: '#475569' }}>
+          <strong>Total de respostas:</strong> {respostasFiltradas.length}
+        </p>
+      )}
+
       {carregando ? (
         <p>Carregando respostas...</p>
       ) : respostasFiltradas.length === 0 ? (
@@ -189,15 +264,35 @@ export default function Respostas() {
             >
               <h2>{nomeFormulario(resposta.form_id)}</h2>
 
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  marginTop: '16px',
+                  marginBottom: '16px',
+                  padding: '14px',
+                  background: '#eff6ff',
+                  borderRadius: '8px'
+                }}
+              >
+                <UserRound size={22} color="#2563eb" />
+
+                <div>
+                  <strong>Enviado por:</strong>
+                  <div style={{ marginTop: '4px' }}>
+                    {nomeUsuario(resposta.user_id)}
+                  </div>
+                </div>
+              </div>
+
               <p>
                 <strong>Status:</strong> {resposta.status}
               </p>
 
               <p>
                 <strong>Enviado em:</strong>{' '}
-                {resposta.submitted_at
-                  ? new Date(resposta.submitted_at).toLocaleString('pt-BR')
-                  : 'Data não informada'}
+                {formatarData(resposta.submitted_at)}
               </p>
 
               <button
@@ -222,18 +317,26 @@ export default function Respostas() {
                     borderRadius: '8px'
                   }}
                 >
-                  {Object.entries(resposta.answers ?? {}).map(
-                    ([perguntaId, valor]) => (
-                      <div
-                        key={perguntaId}
-                        style={{
-                          padding: '12px 0',
-                          borderBottom: '1px solid #e2e8f0'
-                        }}
-                      >
-                        <strong>{tituloPergunta(perguntaId)}</strong>
-                        <p>{formatarValor(valor)}</p>
-                      </div>
+                  <h3 style={{ marginTop: 0 }}>
+                    Respostas de {nomeUsuario(resposta.user_id)}
+                  </h3>
+
+                  {Object.entries(resposta.answers ?? {}).length === 0 ? (
+                    <p>Nenhuma resposta registrada.</p>
+                  ) : (
+                    Object.entries(resposta.answers ?? {}).map(
+                      ([perguntaId, valor]) => (
+                        <div
+                          key={perguntaId}
+                          style={{
+                            padding: '12px 0',
+                            borderBottom: '1px solid #e2e8f0'
+                          }}
+                        >
+                          <strong>{tituloPergunta(perguntaId)}</strong>
+                          <p>{formatarValor(valor)}</p>
+                        </div>
+                      )
                     )
                   )}
                 </div>
